@@ -22,8 +22,8 @@ jobs:
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
-          --timeout 5s
-          --retries 5
+          --health-timeout 5s
+          --health-retries 5
         ports:
           - 5432:5432
     
@@ -49,11 +49,21 @@ jobs:
               echo "✅ PostgreSQL готов"
               exit 0
             fi
-            echo "Ждем PostgreSQL..."
+            echo "Ждем PostgreSQL... ($i/30)"
             sleep 2
           done
           echo "❌ PostgreSQL не запустился"
           exit 1
+      
+      - name: Create tables
+        run: |
+          cd backend
+          python -c "
+          from app.database import engine, Base
+          from app.models import User, AccessPass, SecurityIncident
+          Base.metadata.create_all(bind=engine)
+          print('✅ Таблицы созданы успешно')
+          "
       
       - name: Test imports
         run: |
@@ -67,16 +77,6 @@ jobs:
           from app.auth import get_password_hash, verify_password
           from app.main import app
           print('✅ Все импорты успешны!')
-          "
-      
-      - name: Create tables
-        run: |
-          cd backend
-          python -c "
-          from app.database import engine, Base
-          from app.models import User, AccessPass, SecurityIncident
-          Base.metadata.create_all(bind=engine)
-          print('✅ Таблицы созданы')
           "
 
   frontend-test:
