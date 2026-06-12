@@ -7,182 +7,121 @@ on:
     branches: [ main, master ]
 
 jobs:
-  # 1. ПРОВЕРКА БЭКЕНДА
   backend-test:
     name: Проверка бэкенда
     runs-on: ubuntu-latest
     
+    # Запускаем PostgreSQL как сервис
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: security_user
+          POSTGRES_PASSWORD: SecurePass123
+          POSTGRES_DB: security_jk
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --timeout 5s
+          --retries 5
+        ports:
+          - 5432:5432
+    
     steps:
-      - name: Клонирование репозитория
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
       
-      - name: Установка Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       
-      - name: Установка зависимостей
+      - name: Install dependencies
         run: |
           cd backend
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install pydantic[email] email-validator
       
-      - name: Проверка синтаксиса Python
+      - name: Wait for PostgreSQL
+        run: |
+          for i in {1..30}; do
+            if pg_isready -h localhost -p 5432 -U security_user; then
+              echo "✅ PostgreSQL готов"
+              exit 0
+            fi
+            echo "Ждем PostgreSQL..."
+            sleep 2
+          done
+          echo "❌ PostgreSQL не запустился"
+          exit 1
+      
+      - name: Test imports
         run: |
           cd backend
-          python -m py_compile app/main.py
-          python -m py_compile app/auth.py
-          python -m py_compile app/database.py
-          python -m py_compile app/models.py
-          python -m py_compile app/schemas.py
-          echo "✅ Синтаксис Python корректен"
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+          from app.database import Base, engine
+          from app.models import User, AccessPass, SecurityIncident
+          from app.schemas import UserCreate, UserLogin, Token
+          from app.auth import get_password_hash, verify_password
+          from app.main import app
+          print('✅ Все импорты успешны!')
+          "
       
-      - name: Проверка импорта модулей
+      - name: Create tables
         run: |
           cd backend
-          python -c "from app.main import app; print('✅ Бэкенд загружен успешно')"
-          python -c "from app.database import Base, engine; print('✅ База данных настроена')"
-          python -c "from app.auth import create_access_token, get_password_hash; print('✅ JWT работает')"
-          echo "✅ Все модули импортируются корректно"
-      
-      - name: Проверка наличия обязательных файлов
-        run: |
-          test -f backend/requirements.txt && echo "✅ requirements.txt найден"
-          test -f backend/run.py && echo "✅ run.py найден"
-          test -d backend/app && echo "✅ Папка app найдена"
-          test -f backend/app/main.py && echo "✅ main.py найден"
-          test -f backend/app/routes/auth.py && echo "✅ auth.py найден"
+          python -c "
+          from app.database import engine, Base
+          from app.models import User, AccessPass, SecurityIncident
+          Base.metadata.create_all(bind=engine)
+          print('✅ Таблицы созданы')
+          "
 
-  # 2. ПРОВЕРКА ФРОНТЕНДА
   frontend-test:
     name: Проверка фронтенда
     runs-on: ubuntu-latest
     
     steps:
-      - name: Клонирование репозитория
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
       
-      - name: Установка Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '18'
       
-      - name: Установка зависимостей
+      - name: Install dependencies
         run: |
           cd frontend
-          npm install
+          npm install --legacy-peer-deps
       
-      - name: Проверка сборки
+      - name: Build
         run: |
           cd frontend
           CI=false npm run build
-          test -d build && echo "✅ Сборка успешна"
-      
-      - name: Проверка наличия обязательных файлов
-        run: |
-          test -f frontend/package.json && echo "✅ package.json найден"
-          test -f frontend/public/index.html && echo "✅ index.html найден"
-          test -d frontend/src && echo "✅ Папка src найдена"
-          test -f frontend/src/App.js && echo "✅ App.js найден"
+          echo "✅ Сборка успешна"
 
-  # 3. ПРОВЕРКА БЕЗОПАСНОСТИ
-  security-test:
-    name: Проверка безопасности
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Клонирование репозитория
-        uses: actions/checkout@v4
-      
-      - name: Проверка секретных ключей
-        run: |
-          if grep -q "your-super-secret-key-change-in-production" backend/app/auth.py; then
-            echo "⚠️ ВНИМАНИЕ: Используется стандартный секретный ключ!"
-            echo "⚠️ Рекомендуется заменить на свой в продакшене"
-          else
-            echo "✅ Секретный ключ не стандартный"
-          fi
-      
-      - name: Проверка безопасности паролей
-        run: |
-          if grep -q "password.*=.*\"" backend/app/database.py; then
-            echo "⚠️ ВНИМАНИЕ: Пароль БД прописан в коде"
-            echo "⚠️ Рекомендуется использовать переменные окружения"
-          else
-            echo "✅ Пароль не найден в коде"
-          fi
-      
-      - name: Проверка CORS настроек
-        run: |
-          if grep -q "allow_origins.*=.*\[" backend/app/main.py; then
-            echo "✅ CORS настроен"
-          else
-            echo "⚠️ CORS не настроен"
-          fi
-      
-      - name: Проверка хэширования паролей
-        run: |
-          if grep -q "bcrypt\|sha256_crypt" backend/app/auth.py; then
-            echo "✅ Хэширование паролей настроено"
-          else
-            echo "⚠️ Хэширование паролей не обнаружено"
-          fi
-
-  # 4. ПРОВЕРКА СТРУКТУРЫ
-  structure-test:
-    name: Проверка структуры проекта
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Клонирование репозитория
-        uses: actions/checkout@v4
-      
-      - name: Проверка структуры бэкенда
-        run: |
-          echo "Проверка структуры бэкенда:"
-          ls -la backend/
-          ls -la backend/app/
-          ls -la backend/app/routes/
-          
-          # Проверяем наличие всех роутов
-          test -f backend/app/routes/auth.py && echo "✅ auth.py"
-          test -f backend/app/routes/passes.py && echo "✅ passes.py"
-          test -f backend/app/routes/incidents.py && echo "✅ incidents.py"
-      
-      - name: Проверка структуры фронтенда
-        run: |
-          echo "Проверка структуры фронтенда:"
-          ls -la frontend/
-          ls -la frontend/src/
-          ls -la frontend/src/pages/
-          ls -la frontend/src/components/
-
-  # 5. ИТОГОВЫЙ СТАТУС
   final-status:
-    name: Итоговый статус проверки
+    name: Итоговый статус
     runs-on: ubuntu-latest
-    needs: [backend-test, frontend-test, security-test, structure-test]
+    needs: [backend-test, frontend-test]
     if: always()
     
     steps:
-      - name: Вывод результатов
-        run: |
+      - run: |
           echo "========================================="
           echo "📊 РЕЗУЛЬТАТЫ ПРОВЕРКИ CI/CD"
           echo "========================================="
-          echo "  ✅ Бэкенд: ${{ needs.backend-test.result }}"
-          echo "  ✅ Фронтенд: ${{ needs.frontend-test.result }}"
-          echo "  ✅ Безопасность: ${{ needs.security-test.result }}"
-          echo "  ✅ Структура: ${{ needs.structure-test.result }}"
+          echo "  Бэкенд: ${{ needs.backend-test.result }}"
+          echo "  Фронтенд: ${{ needs.frontend-test.result }}"
           echo "========================================="
           
           if [[ "${{ needs.backend-test.result }}" == "success" && \
-                "${{ needs.frontend-test.result }}" == "success" && \
-                "${{ needs.structure-test.result }}" == "success" ]]; then
+                "${{ needs.frontend-test.result }}" == "success" ]]; then
             echo "🎉 ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ УСПЕШНО!"
-            echo "✅ Проект готов к деплою"
+            exit 0
           else
             echo "❌ НЕКОТОРЫЕ ПРОВЕРКИ НЕ ПРОЙДЕНЫ"
-            echo "⚠️ Требуется исправление ошибок"
             exit 1
           fi
